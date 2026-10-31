@@ -23,7 +23,7 @@ from cryptofeed.defines import CANDLES, FUNDING, INDEX, L1_BOOK, L2_BOOK, L3_BOO
 from cryptofeed.exceptions import BidAskOverlapping
 from cryptofeed.exchange import Exchange
 from cryptofeed.types import OrderBook
-from cryptofeed.util.history import CandleWatermark, TradeWatermark
+from cryptofeed.util.history import CandleWatermark, LiquidationWatermark, TradeWatermark
 
 
 LOG = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class Feed(Exchange):
     async def keepalive(self, conn: AsyncConnection):
         raise NotImplementedError(f'{self.id}: keepalive_interval is set but keepalive() is not implemented')
 
-    def __init__(self, candle_interval=None, candle_closed_only=True, trade_history=False, candle_history=False, timeout=120, timeout_interval=30, retries=15, symbols=None, channels=None, subscription=None, callbacks=None, max_depth=0, checksum_validation=None, cross_check=False, exceptions=None, log_message_on_error=False, delay_start=0, http_proxy: StrOrURL = None, shutdown_timeout=10.0, **kwargs):
+    def __init__(self, candle_interval=None, candle_closed_only=True, trade_history=False, candle_history=False, liquidation_history=False, timeout=120, timeout_interval=30, retries=15, symbols=None, channels=None, subscription=None, callbacks=None, max_depth=0, checksum_validation=None, cross_check=False, exceptions=None, log_message_on_error=False, delay_start=0, http_proxy: StrOrURL = None, shutdown_timeout=10.0, **kwargs):
         """
         candle_interval: str
             the candle interval. See the specific exchange to see what intervals they support.
@@ -83,6 +83,8 @@ class Feed(Exchange):
             deliver historical trades sent on initial subscribe (not all exchange support this)
         candle_history: bool
             deliver historical candles sent on initial subscribe (not all exchange support this)
+        liquidation_history: bool
+            deliver historical liquidations sent on initial subscribe (not all exchanges support this)
         timeout: int
             wait time in seconds before feed is considered dead
             Set to -1 for infinite. quiet_channels are ignored
@@ -132,6 +134,7 @@ class Feed(Exchange):
         self.candle_closed_only = candle_closed_only
         self.trade_watermark = TradeWatermark(trade_history)
         self.candle_watermark = CandleWatermark(candle_history)
+        self.liquidation_watermark = LiquidationWatermark(liquidation_history)
         self.shutdown_timeout = shutdown_timeout
         self._conn_tg = None
         self._spawned = set()
@@ -203,6 +206,14 @@ class Feed(Exchange):
     @candle_history.setter
     def candle_history(self, value: bool):
         self.candle_watermark.history = value
+
+    @property
+    def liquidation_history(self) -> bool:
+        return self.liquidation_watermark.history
+
+    @liquidation_history.setter
+    def liquidation_history(self, value: bool):
+        self.liquidation_watermark.history = value
 
     def _build_subscription(self):
         self._ensure_symbol_mapping()

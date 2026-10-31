@@ -36,6 +36,9 @@ def _group(rows, stream, extra=None) -> dict:
 
 class TradeWatermark:
     # at a high level, this ensures that a feed delivers every trade once and only once, and in time ascending order
+    # one watermark per stream, the symbol for trades
+    _stream_of = staticmethod(_symbol)
+
     def __init__(self, history: bool = False, key=None):
         self.history = history
         self.key = key
@@ -50,7 +53,7 @@ class TradeWatermark:
         key = self.key or _trade_key
         out = []
 
-        for sym, rows in _group(trades, _symbol, symbol).items():
+        for sym, rows in _group(trades, self._stream_of, symbol).items():
             rows.sort(key=lambda t: (t.timestamp, key(t)))
             mark = self._marks.get(sym)
 
@@ -70,7 +73,7 @@ class TradeWatermark:
         key = self.key or _trade_key
         trades = sorted(trades, key=lambda t: (t.timestamp, key(t))) if sort else list(trades)
         for trade in trades:
-            self._note(trade.symbol, trade, key)
+            self._note(self._stream_of(trade), trade, key)
         return trades
 
     def expect(self, symbols):
@@ -109,6 +112,29 @@ class TradeWatermark:
             self._marks[symbol] = [ts, Counter((key(trade),))]
         elif ts == mark[0]:
             mark[1][key(trade)] += 1
+
+
+def _liquidation_stream(liquidation):
+    return (liquidation.symbol, liquidation.status)
+
+
+def _liquidation_key(liquidation):
+    # liquidations carry no id
+    return (liquidation.side, liquidation.price, liquidation.quantity)
+
+
+class LiquidationWatermark(TradeWatermark):
+    # the trade watermark per (symbol, status): a venue lists its filled and unfilled liquidations separately
+    _stream_of = staticmethod(_liquidation_stream)
+
+    def __init__(self, history: bool = False):
+        super().__init__(history, _liquidation_key)
+
+    def get(self, symbol, status):
+        return super().get((symbol, status))
+
+    def batch(self, liquidations, symbol=None, status=None) -> list:
+        return super().batch(liquidations, None if symbol is None else (symbol, status))
 
 
 class CandleWatermark:

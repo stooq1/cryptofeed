@@ -112,13 +112,11 @@ class OKX(Feed):
         return ret, info
 
     async def _liquidations(self, pairs: list):
-        last_update = defaultdict(dict)
         """
         for PERP liquidations, the following arguments are required: uly, state
         for FUTURES liquidations, the following arguments are required: uly, state, alias
         FUTURES, MARGIN and OPTION liquidation request not currently supported by the below
         """
-
         while True:
             for pair in pairs:
                 if 'SWAP' in pair:
@@ -127,23 +125,20 @@ class OKX(Feed):
                 else:
                     continue
 
+                symbol = self.exchange_symbol_to_std_symbol(pair)
                 for status in (FILLED, UNFILLED):
-                    data = await self.http_conn.read(self.rest_endpoints[0].route('liquidations', sandbox=self.sandbox).format(instrument_type, status, uly))
+                    address = self.rest_endpoints[0].route('liquidations', sandbox=self.sandbox).format(instrument_type, status, uly)
+                    data = await self.http_conn.read(address)
                     data = json.loads(data, parse_float=Decimal)
                     timestamp = time.time()
                     if not data['data']:
-                        LOG.info('%s: no liquidation data received for %s @ %s', self.id, pair, self.rest_endpoints[0].route('liquidations', sandbox=self.sandbox).format(instrument_type, status, uly))
-                        continue
-                    if len(data['data'][0]['details']) == 0 or (len(data['data'][0]['details']) > 0 and last_update.get(pair) == data['data'][0]['details'][0]):
-                        continue
-                    for entry in data['data'][0]['details']:
-                        if pair in last_update:
-                            if entry == last_update[pair].get(status):
-                                break
+                        # the usual answer for unfilled liquidations, which fill within seconds
+                        LOG.debug('%s: no liquidation data received for %s @ %s', self.id, pair, address)
 
-                        liq = Liquidation(
+                    liquidations = [
+                        Liquidation(
                             self.id,
-                            self.exchange_symbol_to_std_symbol(pair),
+                            symbol,
                             BUY if entry['side'] == 'buy' else SELL,
                             Decimal(entry['sz']),
                             Decimal(entry['bkPx']),
@@ -152,8 +147,10 @@ class OKX(Feed):
                             self.timestamp_normalize(int(entry['ts'])),
                             raw=data
                         )
+                        for entry in (data['data'][0]['details'] if data['data'] else [])
+                    ]
+                    for liq in self.liquidation_watermark.batch(liquidations, symbol=symbol, status=status):
                         await self.callback(LIQUIDATIONS, liq, timestamp)
-                    last_update[pair][status] = data['data'][0]['details'][0]
                 await asyncio.sleep(0.1)
             await asyncio.sleep(60)
 

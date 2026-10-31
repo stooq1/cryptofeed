@@ -121,8 +121,8 @@ cryptofeed received the message that produced the callback. The objects are defi
   set when the venue provides them.
 * `Candle.closed` is `True` once the bar is final, by default only closed candles are delivered.
   (`candle_closed_only=False` also delivers each update of the open bar).
-* `trade_history` and `candle_history` control whether the batch of recent trades or candles some venues send on
-  subscribe is delivered, by default it is `False`.
+* `trade_history`, `candle_history` and `liquidation_history` control whether the batch of recent trades, candles or
+  liquidations some venues send on subscribe is delivered, by default it is `False`.
 
 ## Backends
 
