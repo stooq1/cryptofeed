@@ -3,6 +3,7 @@
 ### 3.0.3
 * Bugfix: Duplication issues in NBBO
 * Update: `liquidation_history` feed option, like `trade_history` and `candle_history` - deliver the historical liquidations sent on initial subscribe
+* Update: OKX `info()` has `contract_size` for swaps, futures and options; their sizes are in contracts
 
 ### 3.0.2 (2026-10-29)
 * Bugfix: Bybit liquidation side is now the side of the liquidation order (SELL when a long is liquidated), as for Binance and OKX
