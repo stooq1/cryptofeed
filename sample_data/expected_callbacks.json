@@ -164,9 +164,9 @@
   },
   "OKX": {
     "candles": 250,
-    "l2_book": 54809,
-    "ticker": 57725,
-    "trades": 1289
+    "l2_book": 46813,
+    "ticker": 52334,
+    "trades": 11754
   },
   "PHEMEX": {
     "candles": 121,

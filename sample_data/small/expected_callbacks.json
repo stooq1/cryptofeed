@@ -163,10 +163,10 @@
     "trades": 2375
   },
   "OKX": {
-    "candles": 103,
-    "l2_book": 5464,
-    "ticker": 5521,
-    "trades": 174
+    "candles": 50,
+    "l2_book": 4462,
+    "ticker": 5363,
+    "trades": 971
   },
   "PHEMEX": {
     "candles": 81,
