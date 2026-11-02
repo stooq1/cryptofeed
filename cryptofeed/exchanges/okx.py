@@ -5,6 +5,7 @@ Please see the LICENSE file for the terms and conditions
 associated with this software.
 '''
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Tuple, Union
 from cryptofeed import _json as json
@@ -16,7 +17,7 @@ from cryptofeed.connection import AsyncConnection, HTTPAsyncConn, RestEndpoint, 
 from cryptofeed.defines import CALL, FUTURES, OKX as OKX_str, LIQUIDATIONS, BUY, OPTION, PERPETUAL, PUT, SELL, FILLED, ASK, BID, FUNDING, L2_BOOK, OPEN_INTEREST, TICKER, TRADES, CANDLES, SPOT, UNFILLED
 from cryptofeed.feed import Feed
 from cryptofeed.exceptions import MissingSequenceNumber
-from cryptofeed.symbols import Symbol
+from cryptofeed.symbols import Symbol, str_to_symbol
 from cryptofeed.types import OrderBook, Trade, Ticker, Funding, OpenInterest, Liquidation, Candle
 
 
@@ -33,21 +34,27 @@ class OKX(Feed):
     provides_sequence_number = True
     validates_sequence_number = True
     valid_candle_intervals = {'1M', '1W', '1D', '12H', '6H', '4H', '2H', '1H', '30m', '15m', '5m', '3m', '1m'}
-    candle_interval_map = {'1M': 2630000, '1W': 604800, '1D': 86400, '12H': 43200, '6H': 21600, '4H': 14400, '2H': 7200, '1H': 3600, '30m': 1800, '15m': 900, '5m': 300, '3m': 180, '1m': 60}
+    # bar lengths in seconds; a 1M bar is a calendar month, see _candle_stop
+    candle_interval_map = {'1W': 604800, '1D': 86400, '12H': 43200, '6H': 21600, '4H': 14400, '2H': 7200, '1H': 3600, '30m': 1800, '15m': 900, '5m': 300, '3m': 180, '1m': 60}
+    # bars without the utc suffix open at 00:00 UTC+8 ("UTC+8 opening price k-line: 6H/12H/1D/2D/3D/1W/1M/3M"),
+    # so a 1M bar opens at 16:00 UTC on the last day of the previous month
+    CANDLE_TZ = timezone(timedelta(hours=8))
     websocket_channels = {
         L2_BOOK: 'books',
-        TRADES: 'trades',
+        TRADES: 'trades-all',
         TICKER: 'tickers',
         FUNDING: 'funding-rate',
         OPEN_INTEREST: 'open-interest',
         LIQUIDATIONS: LIQUIDATIONS,
         CANDLES: 'candle'
     }
+    # instrument types a channel refuses
+    channel_excludes = {FUNDING: (SPOT, OPTION), OPEN_INTEREST: (SPOT,)}
     websocket_endpoints = [
-        WebsocketEndpoint('wss://ws.okx.com/ws/v5/public', channel_filter=(websocket_channels[L2_BOOK], websocket_channels[TRADES], websocket_channels[TICKER], websocket_channels[FUNDING], websocket_channels[OPEN_INTEREST], websocket_channels[LIQUIDATIONS]), options={'compression': None}),
-        WebsocketEndpoint('wss://ws.okx.com/ws/v5/business', channel_filter=(websocket_channels[CANDLES],), options={'compression': None}),
+        WebsocketEndpoint('wss://ws.okx.com/ws/v5/public', channel_filter=(websocket_channels[L2_BOOK], websocket_channels[TICKER], websocket_channels[FUNDING], websocket_channels[OPEN_INTEREST], websocket_channels[LIQUIDATIONS]), options={'compression': None}),
+        WebsocketEndpoint('wss://ws.okx.com/ws/v5/business', channel_filter=(websocket_channels[CANDLES], websocket_channels[TRADES]), options={'compression': None}),
     ]
-    rest_endpoints = [RestEndpoint('https://www.okx.com', routes=Routes(['/api/v5/public/instruments?instType=SPOT', '/api/v5/public/instruments?instType=SWAP', '/api/v5/public/instruments?instType=FUTURES'], currencies='/api/v5/public/underlying?instType=OPTION', liquidations='/api/v5/public/liquidation-orders?instType={}&limit=100&state={}&uly={}', l2book='/api/v5/market/books?instId={}&sz={}'))]
+    rest_endpoints = [RestEndpoint('https://www.okx.com', routes=Routes(['/api/v5/public/instruments?instType=SPOT', '/api/v5/public/instruments?instType=SWAP', '/api/v5/public/instruments?instType=FUTURES'], currencies='/api/v5/public/underlying?instType=OPTION', liquidations='/api/v5/public/liquidation-orders?instType={}&limit=100&state={}&uly={}'))]
     option_instruments = '/api/v5/public/instruments?instType=OPTION&uly={}'
     default_option_underlyings = ('BTC-USD', 'ETH-USD')
     request_limit = 20
@@ -158,15 +165,14 @@ class OKX(Feed):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.__reset()
-
-    def __reset(self):
-        self._l2_book = {}
         self.seq_no = {}
 
-    @classmethod
-    def instrument_type(cls, symbol: str):
-        return cls.info()['instrument_type'][symbol]
+    def _candle_stop(self, start: float) -> float:
+        if self.candle_interval == '1M':
+            opened = datetime.fromtimestamp(start, tz=self.CANDLE_TZ)
+            year, month = (opened.year + 1, 1) if opened.month == 12 else (opened.year, opened.month + 1)
+            return opened.replace(year=year, month=month).timestamp()
+        return start + self.candle_interval_map[self.candle_interval]
 
     async def _candle(self, msg: dict, timestamp: float):
         '''
@@ -189,9 +195,10 @@ class OKX(Feed):
                 ]
             ]
         }
+
+        the update carries no event time, so Candle.timestamp is None
         '''
         symbol = self.exchange_symbol_to_std_symbol(msg['arg']['instId'])
-        interval = self.candle_interval_map[self.candle_interval]
 
         for entry in msg['data']:
             closed = len(entry) > 8 and entry[8] == '1'
@@ -203,7 +210,7 @@ class OKX(Feed):
                 self.id,
                 symbol,
                 start,
-                start + interval,
+                self._candle_stop(start),
                 self.candle_interval,
                 None,
                 Decimal(entry[1]),
@@ -212,7 +219,7 @@ class OKX(Feed):
                 Decimal(entry[3]),
                 Decimal(entry[5]),
                 closed,
-                timestamp,
+                None,
                 raw=msg
             )
             await self.callback(CANDLES, candle, timestamp)
@@ -223,13 +230,15 @@ class OKX(Feed):
         """
         pair = self.exchange_symbol_to_std_symbol(msg['arg']['instId'])
         for update in msg['data']:
-            update_timestamp = self.timestamp_normalize(int(update['ts']))
+            if not update['bidPx'] or not update['askPx']:
+                # a side of the book is empty
+                continue
             t = Ticker(
                 self.id,
                 pair,
-                Decimal(update['bidPx']) if update['bidPx'] else Decimal(0),
-                Decimal(update['askPx']) if update['askPx'] else Decimal(0),
-                update_timestamp,
+                Decimal(update['bidPx']),
+                Decimal(update['askPx']),
+                self.timestamp_normalize(int(update['ts'])),
                 raw=update
             )
             await self.callback(TICKER, t, timestamp)
@@ -267,17 +276,18 @@ class OKX(Feed):
         """
         {
             "arg": {
-                "channel": "trades",
-                "instId": "BTC-USD-191227"
+                "channel": "trades-all",
+                "instId": "BTC-USDT"
             },
             "data": [
                 {
-                    "instId": "BTC-USD-191227",
-                    "tradeId": "9",
-                    "px": "0.016",
-                    "sz": "50",
+                    "instId": "BTC-USDT",
+                    "tradeId": "1077229381",
+                    "px": "77910.5",
+                    "sz": "0.16",
                     "side": "buy",
-                    "ts": "1597026383085"
+                    "ts": "1793569925719",
+                    "source": "0"
                 }
             ]
         }
@@ -325,22 +335,6 @@ class OKX(Feed):
 
         self.seq_no[pair] = sequence
         return True
-
-    def _parse_snapshot(self, symbol: str, data) -> OrderBook:
-        response = json.loads(data, parse_float=Decimal)
-        if response.get('code') not in ('0', 0):
-            raise ValueError(f"{self.id}: book snapshot for {symbol} returned code {response.get('code')!r}: {response.get('msg')!r}")
-        if not response.get('data'):
-            raise ValueError(f'{self.id}: book snapshot for {symbol} carried no data - is the instrument listed?')
-        entry = response['data'][0]
-
-        bids = {Decimal(price): Decimal(size) for price, size, *_ in entry['bids']}
-        asks = {Decimal(price): Decimal(size) for price, size, *_ in entry['asks']}
-        book = OrderBook(self.id, symbol, max_depth=self.max_depth, bids=bids, asks=asks)
-        book.timestamp = self.timestamp_normalize(int(entry['ts'])) if entry.get('ts') else None
-        book.sequence_number = int(entry['seqId']) if entry.get('seqId') is not None else None
-        book.raw = entry
-        return book
 
     async def _book(self, msg: dict, timestamp: float):
         if msg['action'] == 'snapshot':
@@ -394,38 +388,50 @@ class OKX(Feed):
             else:
                 LOG.warning("%s: Unhandled event %s", self.id, msg)
         elif 'arg' in msg:
-            if self.websocket_channels[L2_BOOK] in msg['arg']['channel']:
+            channel = msg['arg']['channel']
+            if channel == self.websocket_channels[L2_BOOK]:
                 await self._book(msg, timestamp)
-            elif self.websocket_channels[TICKER] in msg['arg']['channel']:
+            elif channel == self.websocket_channels[TICKER]:
                 await self._ticker(msg, timestamp)
-            elif self.websocket_channels[TRADES] in msg['arg']['channel']:
+            elif channel in (self.websocket_channels[TRADES], 'trades'):
+                # trades is the aggregated channel
                 await self._trade(msg, timestamp)
-            elif self.websocket_channels[CANDLES] in msg['arg']['channel']:
+            elif channel.startswith(self.websocket_channels[CANDLES]):
                 await self._candle(msg, timestamp)
-            elif self.websocket_channels[FUNDING] in msg['arg']['channel']:
+            elif channel == self.websocket_channels[FUNDING]:
                 await self._funding(msg, timestamp)
-            elif self.websocket_channels[OPEN_INTEREST] in msg['arg']['channel']:
+            elif channel == self.websocket_channels[OPEN_INTEREST]:
                 await self._open_interest(msg, timestamp)
         else:
             LOG.warning("%s: Unhandled message %s", self.id, msg)
 
     async def subscribe(self, connection: AsyncConnection):
         channels = []
-        for chan in connection.subscription:
+        for chan, pairs in connection.subscription.items():
             if chan == LIQUIDATIONS:
-                self._spawn('liquidations', self._liquidations, connection.subscription[chan])
+                self._spawn('liquidations', self._liquidations, pairs)
                 continue
-            for pair in connection.subscription[chan]:
+            for pair in self._supported(chan, pairs):
                 channels.append(self.build_subscription(chan, pair))
 
         if channels:
             await connection.write(json.dumps({"op": "subscribe", "args": channels}))
 
+    def _supported(self, channel: str, pairs: list) -> list:
+        '''
+        returns a list of the supported instruments for a channel
+        '''
+        excluded = self.channel_excludes.get(self.exchange_channel_to_std(channel), ())
+        if not excluded:
+            return pairs
+        kept, skipped = [], []
+        for pair in pairs:
+            (skipped if str_to_symbol(self.exchange_symbol_to_std_symbol(pair)).type in excluded else kept).append(pair)
+        if skipped:
+            LOG.warning('%s: %s does not exist for %s instruments, not subscribing %d symbols (%s%s)', self.id, channel, ', '.join(excluded), len(skipped), ', '.join(skipped[:5]), ', ...' if len(skipped) > 5 else '')
+        return kept
+
     def build_subscription(self, channel: str, ticker: str) -> dict:
-        if channel in ['candle']:
-            subscription_dict = {"channel": f"{channel}{self.candle_interval}",
-                                 "instId": ticker}
-        else:
-            subscription_dict = {"channel": channel,
-                                 "instId": ticker}
-        return subscription_dict
+        if channel == self.websocket_channels[CANDLES]:
+            channel = f'{channel}{self.candle_interval}'
+        return {'channel': channel, 'instId': ticker}

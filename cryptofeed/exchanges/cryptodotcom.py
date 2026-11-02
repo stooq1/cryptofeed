@@ -204,12 +204,9 @@ class CryptoDotCom(Feed):
 
         for entry in msg['data']:
             ts = self.timestamp_normalize(entry['t'])
-            if wants_ticker:
-                # an instrument with one side of the book empty omits that side's price
-                t = Ticker(self.id, symbol,
-                           Decimal(entry['b']) if entry.get('b') else Decimal(0),
-                           Decimal(entry['k']) if entry.get('k') else Decimal(0),
-                           ts, raw=entry)
+            # an instrument with one side of the book empty omits that side's price
+            if wants_ticker and entry.get('b') and entry.get('k'):
+                t = Ticker(self.id, symbol, Decimal(entry['b']), Decimal(entry['k']), ts, raw=entry)
                 await self.callback(TICKER, t, timestamp)
             if wants_oi:
                 await self.callback(OPEN_INTEREST, OpenInterest(self.id, symbol, Decimal(entry['oi']), ts, raw=entry), timestamp)
